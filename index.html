@@ -1454,12 +1454,16 @@ async function init() {
     const restored = restoreDriveTokenFromStorage();
     if (restored) {
       applyDriveStatus(); // 緑バッジに更新
-    } else {
-      // 期限切れまたはキャッシュ無し → サイレント試行(失敗してもバナーで通知済み)
-      setTimeout(() => {
-        driveSignIn(true).catch(() => { /* 失敗時はユーザーが手動接続 */ });
-      }, 500);
     }
+    // Googleライブラリのロード完了後、トークンクライアントを事前初期化
+    // (これでユーザーが「Googleに接続」を押した時にゼロ遅延でポップアップが開ける)
+    ensureGoogleScript().then(() => {
+      setupDriveTokenClient();
+      // キャッシュ無しならサイレント再認証も試行
+      if (!restored) {
+        driveSignIn(true).catch(() => { /* 失敗時はユーザーが手動接続 */ });
+      }
+    }).catch(() => { /* ライブラリ読込失敗、ユーザー手動接続待ち */ });
   }
 }
 
@@ -1574,32 +1578,64 @@ function clearDriveTokenStorage() {
   try { localStorage.removeItem('moto-drive-token'); } catch {}
 }
 
+// pending Promise (callback を Promise につなげるため)
+let drivePending = null;
+
+// 同期: Google ライブラリが読み込まれていればトークンクライアントを初期化
+function setupDriveTokenClient() {
+  if (!isDriveConfigured()) return false;
+  if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) return false;
+  if (driveTokenClient && driveTokenClient._clientId === settings.driveClientId) return true;
+  driveTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: settings.driveClientId,
+    scope: DRIVE_SCOPE,
+    callback: (resp) => {
+      const p = drivePending; drivePending = null;
+      if (resp.error) {
+        if (p) p.reject(new Error(resp.error_description || resp.error));
+        return;
+      }
+      driveAccessToken = resp.access_token;
+      driveTokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
+      saveDriveTokenToStorage();
+      applyDriveStatus();
+      if (p) p.resolve(true);
+    },
+    error_callback: (err) => {
+      const p = drivePending; drivePending = null;
+      if (p) p.reject(new Error(err.message || 'OAuth error'));
+    }
+  });
+  driveTokenClient._clientId = settings.driveClientId;
+  return true;
+}
+
+// 同期: ポップアップを user gesture から直接開く
+function requestDrivePopupSync(silent) {
+  if (!setupDriveTokenClient()) {
+    return Promise.reject(new Error('Googleライブラリ未ロード or Client ID未設定'));
+  }
+  return new Promise((resolve, reject) => {
+    drivePending = { resolve, reject };
+    try {
+      driveTokenClient.requestAccessToken({ prompt: silent ? 'none' : '' });
+    } catch (e) {
+      drivePending = null;
+      reject(e);
+    }
+  });
+}
+
+// 非同期版: ライブラリ未ロード時の待機を含む(主にinit用)
 async function driveSignIn(silent) {
   if (!isDriveConfigured()) {
     showToast('クライアントIDを入力してください');
     return false;
   }
-  await ensureGoogleScript();
-  return new Promise((resolve, reject) => {
-    try {
-      driveTokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: settings.driveClientId,
-        scope: DRIVE_SCOPE,
-        callback: (resp) => {
-          if (resp.error) {
-            return reject(new Error(resp.error_description || resp.error));
-          }
-          driveAccessToken = resp.access_token;
-          driveTokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
-          saveDriveTokenToStorage();
-          applyDriveStatus();
-          resolve(true);
-        },
-        error_callback: (err) => reject(new Error(err.message || 'OAuth error'))
-      });
-      driveTokenClient.requestAccessToken({ prompt: silent ? 'none' : '' });
-    } catch (e) { reject(e); }
-  });
+  if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
+    await ensureGoogleScript();
+  }
+  return requestDrivePopupSync(silent);
 }
 
 function driveSignOut() {
@@ -3466,21 +3502,30 @@ function setupSettings() {
     });
   });
 
-  // Drive 連携
-  document.getElementById('btn-drive-connect').addEventListener('click', async () => {
-    try {
-      // 入力中の値を反映してからサインイン
-      settings.driveClientId = document.getElementById('s-drive-client-id').value.trim();
-      settings.driveFolderId = document.getElementById('s-drive-folder-id').value.trim();
-      settings.driveAutoUpload = document.getElementById('s-drive-auto').checked;
-      await dbPut(STORE_SETTINGS, settings);
-      await driveSignIn(false);
-      showToast('Googleに接続しました');
-    } catch (e) {
+  // Drive 連携(iPhone Safari のポップアップブロック対策で、await を入れず同期的にポップアップを開く)
+  document.getElementById('btn-drive-connect').addEventListener('click', () => {
+    // 同期: 入力中の値をメモリに反映
+    settings.driveClientId = document.getElementById('s-drive-client-id').value.trim();
+    settings.driveFolderId = document.getElementById('s-drive-folder-id').value.trim();
+    settings.driveAutoUpload = document.getElementById('s-drive-auto').checked;
+
+    // Googleライブラリ未ロード時はガード
+    if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
       const help = document.getElementById('drive-help');
-      help.textContent = '✗ ' + e.message;
+      help.textContent = 'Googleライブラリ未ロード、少し待ってから再試行してください';
       help.style.color = 'var(--danger)';
+      return;
     }
+
+    // 同期的にポップアップを開く(これで iPhone Safari もブロックしない)
+    requestDrivePopupSync(false)
+      .then(() => dbPut(STORE_SETTINGS, settings))
+      .then(() => showToast('Googleに接続しました'))
+      .catch(e => {
+        const help = document.getElementById('drive-help');
+        help.textContent = '✗ ' + e.message;
+        help.style.color = 'var(--danger)';
+      });
   });
   document.getElementById('btn-drive-disconnect').addEventListener('click', () => {
     driveSignOut();
