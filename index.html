@@ -794,8 +794,14 @@ button.chip:hover { background: var(--border); }
 <section id="page-product" class="page">
   <div class="card">
     <h2>商品マスタ <span id="product-count" style="font-size:13px;color:var(--text-sub);font-weight:normal"></span></h2>
-    <p style="color:var(--text-sub);font-size:13px;margin-top:0">発行画面の「商品」プルダウンに出る項目を管理します。表示中(👁) のみ発行画面に出ます。</p>
-    <button class="btn full" id="btn-product-add" type="button">＋ 商品を追加</button>
+    <p style="color:var(--text-sub);font-size:13px;margin-top:0">発行画面の「商品」プルダウンに出る項目を管理します。状態「販売中」「受注のみ」のみ発行画面に出ます。</p>
+    <div class="row">
+      <button class="btn" id="btn-product-add" type="button">＋ 商品を追加</button>
+      <button class="btn secondary" id="btn-product-import" type="button">📥 CSVインポート</button>
+      <button class="btn secondary" id="btn-product-export" type="button">📤 CSV出力</button>
+    </div>
+    <input id="product-import-file" type="file" accept=".csv,text/csv" style="display:none">
+    <div class="help-text" style="margin-top:6px">CSVインポートはマージモード(SKU一致で更新、無ければ追加、削除はしない)</div>
     <ul id="product-list" class="sku-list" style="margin-top:12px"></ul>
     <div id="product-empty" style="text-align:center;color:var(--text-sub);padding:20px;display:none">商品がまだありません</div>
   </div>
@@ -1021,27 +1027,53 @@ button.chip:hover { background: var(--border); }
 <!-- SKU編集モーダル -->
 <div class="modal" id="modal-sku">
   <div class="modal-content">
-    <h3 id="sku-modal-title">SKUを追加</h3>
+    <h3 id="sku-modal-title">商品を追加</h3>
     <div class="field">
       <label for="sku-code">SKUコード</label>
       <input id="sku-code" type="text" placeholder="例: MAI-V01A-ACR">
     </div>
     <div class="field">
-      <label for="sku-name">商品名</label>
-      <input id="sku-name" type="text">
+      <label for="sku-name">商品名 <span style="color:var(--text-sub);font-weight:normal;font-size:12px">(顧客向け表示、テーマは含めない)</span></label>
+      <input id="sku-name" type="text" placeholder="例: まいまい第3弾アクスタ">
     </div>
     <div class="field">
-      <label for="sku-price">単価（円）</label>
-      <input id="sku-price" type="number" min="0" step="1" inputmode="numeric">
+      <label for="sku-theme">テーマ <span style="color:var(--text-sub);font-weight:normal;font-size:12px">(内部用、顧客には非表示)</span></label>
+      <input id="sku-theme" type="text" placeholder="例: 怒りツノ">
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="sku-price">販売単価（円）</label>
+        <input id="sku-price" type="number" min="0" step="1" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="sku-status">状態</label>
+        <select id="sku-status">
+          <option value="販売中">販売中</option>
+          <option value="完売">完売</option>
+          <option value="廃番">廃番</option>
+          <option value="受注のみ">受注のみ</option>
+        </select>
+      </div>
     </div>
     <div class="field">
       <label for="sku-note">但し書きのデフォルト</label>
       <input id="sku-note" type="text" placeholder="例: アクリルスタンド代として">
     </div>
+    <div class="field">
+      <label for="sku-search-tags">検索タグ <span style="color:var(--text-sub);font-weight:normal;font-size:12px">(カンマ区切り、将来の検索用)</span></label>
+      <input id="sku-search-tags" type="text" placeholder="例: まいまい,怒り,ツノ,角">
+    </div>
+    <div class="field">
+      <label for="sku-memo">備考</label>
+      <input id="sku-memo" type="text" placeholder="例: 第3弾派生">
+    </div>
     <label style="display:flex;align-items:center;gap:8px;margin:10px 0;cursor:pointer">
       <input type="checkbox" id="sku-hidden" style="width:20px;height:20px">
       <span>一覧から非表示にする（履歴は残る）</span>
     </label>
+    <div style="font-size:12px;color:var(--text-sub);margin-bottom:10px">
+      ※状態を「完売」「廃番」にすると自動的に非表示になります
+    </div>
     <div class="modal-actions">
       <button class="btn secondary" data-close-modal="modal-sku">キャンセル</button>
       <button class="btn" id="btn-sku-save">保存</button>
@@ -1208,13 +1240,15 @@ const DEFAULT_SETTINGS = {
 };
 
 const DEFAULT_SKUS = [
-  { sku: 'MAI-V01A-ACR', name: 'まいまい第1弾アクスタ（恐竜）',       price: 2000, note: 'アクリルスタンド代として',     active: true },
-  { sku: 'MAI-V02A-ACR', name: 'まいまい第2弾アクスタ（アラビアン）', price: 2000, note: 'アクリルスタンド代として',     active: true },
-  { sku: 'MAI-V03A-ACR', name: 'まいまい第3弾アクスタ（怒りツノ）',   price: 2000, note: 'アクリルスタンド代として',     active: true },
-  { sku: 'MAI-V03A-SMP', name: 'まいまい第3弾スマホスタンド',         price: 2000, note: 'キャラクターグッズ代として',   active: true },
-  { sku: 'MAI-V03A-KEY', name: 'まいまい第3弾キーホルダー',           price: 1500, note: 'キャラクターグッズ代として',   active: true },
-  { sku: 'MAI-V04A-ACR', name: 'まいまい第4弾アクスタ（ゴルフ）',     price: 3000, note: 'アクリルスタンド代として',     active: true },
-  { sku: 'MAI-V04A-KEY', name: 'まいまい第4弾キーホルダー（ゴルフ）', price: 3000, note: 'キャラクターグッズ代として',   active: true }
+  { sku: 'MAI-V01A-ACR', name: 'まいまい第1弾アクスタ',         price: 2000, note: 'アクリルスタンド代として',   theme: '恐竜',       searchTags: 'まいまい,恐竜,コスチューム,ダイナソー', status: '完売',   memo: '初回ロット',          active: false },
+  { sku: 'MAI-V02A-ACR', name: 'まいまい第2弾アクスタ',         price: 2000, note: 'アクリルスタンド代として',   theme: 'アラビアン', searchTags: 'まいまい,アラビアン,マハラジャ',       status: '完売',   memo: '本人マハラジャ衣装',   active: false },
+  { sku: 'MAI-V03A-ACR', name: 'まいまい第3弾アクスタ',         price: 2000, note: 'アクリルスタンド代として',   theme: '怒りツノ',   searchTags: 'まいまい,怒り,ツノ,角,激怒',         status: '販売中', memo: '',                    active: true  },
+  { sku: 'MAI-V03A-SMP', name: 'まいまい第3弾スマホスタンド',   price: 2500, note: 'キャラクターグッズ代として', theme: '怒りツノ',   searchTags: 'まいまい,怒り,ツノ,角,スマホ,スタンド', status: '販売中', memo: '第3弾派生',           active: true  },
+  { sku: 'MAI-V03A-KEY', name: 'まいまい第3弾キーホルダー',     price: 1500, note: 'キャラクターグッズ代として', theme: '怒りツノ',   searchTags: 'まいまい,怒り,ツノ,角,キーホルダー',   status: '販売中', memo: '第3弾派生',           active: true  },
+  { sku: 'MAI-V04A-ACR', name: 'まいまい第4弾アクスタ',         price: 3000, note: 'アクリルスタンド代として',   theme: 'ゴルフ',     searchTags: 'まいまい,ゴルフ,ゴルファー',         status: '完売',   memo: 'SMG景品用、納期短縮', active: false },
+  { sku: 'MAI-V04A-KEY', name: 'まいまい第4弾キーホルダー',     price: 3000, note: 'キャラクターグッズ代として', theme: 'ゴルフ',     searchTags: 'まいまい,ゴルフ,キーホルダー',       status: '完売',   memo: 'SMG景品用、納期短縮', active: false },
+  { sku: 'EMI-V01A-ACR', name: 'エミリー第1弾アクスタA',         price: 850,  note: 'アクリルスタンド代として',   theme: 'デザインA',  searchTags: 'エミリー,Emily,デザインA',           status: '販売中', memo: '受託・5/12納品予定',  active: true  },
+  { sku: 'EMI-V01B-ACR', name: 'エミリー第1弾アクスタB',         price: 850,  note: 'アクリルスタンド代として',   theme: 'デザインB',  searchTags: 'エミリー,Emily,デザインB',           status: '販売中', memo: '受託・5/12納品予定',  active: true  }
 ];
 
 // ============================================================
@@ -1649,10 +1683,13 @@ async function migrateReceipts() {
 async function migrateSkus() {
   const all = await dbAll(STORE_SKUS);
   for (const s of all) {
-    if (typeof s.active === 'undefined') {
-      s.active = true;
-      await dbPut(STORE_SKUS, s);
-    }
+    let changed = false;
+    if (typeof s.active === 'undefined') { s.active = true; changed = true; }
+    if (typeof s.theme === 'undefined') { s.theme = ''; changed = true; }
+    if (typeof s.searchTags === 'undefined') { s.searchTags = ''; changed = true; }
+    if (typeof s.status === 'undefined') { s.status = '販売中'; changed = true; }
+    if (typeof s.memo === 'undefined') { s.memo = ''; changed = true; }
+    if (changed) await dbPut(STORE_SKUS, s);
   }
 }
 
@@ -3399,6 +3436,13 @@ function setupSettings() {
     showToast('印影を削除しました（保存ボタンで確定）');
   });
   document.getElementById('btn-product-add').addEventListener('click', () => openSkuModal(null));
+  document.getElementById('btn-product-export').addEventListener('click', exportSkusCSV);
+  document.getElementById('btn-product-import').addEventListener('click', () => document.getElementById('product-import-file').click());
+  document.getElementById('product-import-file').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) await importSkusCSV(f);
+  });
   document.getElementById('btn-sku-save').addEventListener('click', saveSku);
   document.getElementById('btn-note-chip-add').addEventListener('click', () => openNoteChipModal(null));
   document.getElementById('btn-chip-save').addEventListener('click', saveNoteChip);
@@ -3558,11 +3602,16 @@ function renderSkuList() {
     const eyeIcon = isActive ? '👁' : '🚫';
     const eyeTitle = isActive ? '非表示にする' : '表示にする';
     const hiddenBadge = isActive ? '' : '<span style="display:inline-block;padding:1px 6px;border-radius:8px;background:#8e8e93;color:#fff;font-size:10px;font-weight:600;margin-left:4px">非表示中</span>';
+    const statusColors = { '販売中': '#34c759', '完売': '#8e8e93', '廃番': '#ff3b30', '受注のみ': '#ff9500' };
+    const statusBadge = s.status
+      ? `<span style="display:inline-block;padding:1px 6px;border-radius:8px;background:${statusColors[s.status] || '#8e8e93'};color:#fff;font-size:10px;font-weight:600;margin-left:4px">${escapeHtml(s.status)}</span>`
+      : '';
+    const themeSpan = s.theme ? `<span style="color:var(--text-sub);font-size:12px"> / テーマ: ${escapeHtml(s.theme)}</span>` : '';
     li.innerHTML = `
       <div class="info">
-        <div class="sku-code">${escapeHtml(s.sku)}${hiddenBadge}</div>
-        <div class="sku-name">${escapeHtml(s.name)}</div>
-        <div class="sku-price">¥${s.price.toLocaleString()} — ${escapeHtml(s.note || '')}</div>
+        <div class="sku-code">${escapeHtml(s.sku)}${statusBadge}${hiddenBadge}</div>
+        <div class="sku-name">${escapeHtml(s.name)}${themeSpan}</div>
+        <div class="sku-price">¥${s.price.toLocaleString()} — ${escapeHtml(s.note || '')}${s.memo ? ` <span style="color:var(--text-sub)">（${escapeHtml(s.memo)}）</span>` : ''}</div>
       </div>
       <div class="actions">
         <button class="icon" title="編集" data-edit="${escapeHtml(s.sku)}">✎</button>
@@ -3618,8 +3667,12 @@ function openSkuModal(sku) {
   document.getElementById('sku-modal-title').textContent = sku ? '商品を編集' : '商品を追加';
   document.getElementById('sku-code').value = sku ? sku.sku : '';
   document.getElementById('sku-name').value = sku ? sku.name : '';
+  document.getElementById('sku-theme').value = sku ? (sku.theme || '') : '';
   document.getElementById('sku-price').value = sku ? sku.price : '';
+  document.getElementById('sku-status').value = sku ? (sku.status || '販売中') : '販売中';
   document.getElementById('sku-note').value = sku ? (sku.note || '') : '';
+  document.getElementById('sku-search-tags').value = sku ? (sku.searchTags || '') : '';
+  document.getElementById('sku-memo').value = sku ? (sku.memo || '') : '';
   document.getElementById('sku-hidden').checked = sku ? (sku.active === false) : false;
   openModal('modal-sku');
 }
@@ -3627,15 +3680,21 @@ function openSkuModal(sku) {
 async function saveSku() {
   const code = document.getElementById('sku-code').value.trim();
   const name = document.getElementById('sku-name').value.trim();
+  const theme = document.getElementById('sku-theme').value.trim();
   const price = Number(document.getElementById('sku-price').value);
+  const status = document.getElementById('sku-status').value;
   const note = document.getElementById('sku-note').value.trim();
-  const hidden = document.getElementById('sku-hidden').checked;
+  const searchTags = document.getElementById('sku-search-tags').value.trim();
+  const memo = document.getElementById('sku-memo').value.trim();
+  let hidden = document.getElementById('sku-hidden').checked;
+  // 状態 → active 連動: 完売・廃番 なら強制非表示
+  if (status === '完売' || status === '廃番') hidden = true;
   if (!code || !name || !(price >= 0)) { showToast('SKU/商品名/単価を入力してください'); return; }
   if (editingSkuOriginal && editingSkuOriginal !== code) {
     await dbDelete(STORE_SKUS, editingSkuOriginal);
     skus = skus.filter(x => x.sku !== editingSkuOriginal);
   }
-  const obj = { sku: code, name, price, note, active: !hidden };
+  const obj = { sku: code, name, price, note, theme, searchTags, status, memo, active: !hidden };
   await dbPut(STORE_SKUS, obj);
   const idx = skus.findIndex(x => x.sku === code);
   if (idx >= 0) skus[idx] = obj; else skus.push(obj);
@@ -3643,6 +3702,115 @@ async function saveSku() {
   fillSkuSelect();
   closeModal('modal-sku');
   showToast('商品を保存しました');
+}
+
+// ===== 商品マスタ CSV インポート/エクスポート =====
+function csvEscapeCell(s) {
+  s = String(s == null ? '' : s);
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+function parseCsvText(text) {
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const rows = [];
+  let cur = '', inQuote = false, row = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"' && text[i+1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQuote = false;
+      else cur += ch;
+    } else {
+      if (ch === '"') inQuote = true;
+      else if (ch === ',') { row.push(cur); cur = ''; }
+      else if (ch === '\r') { /* skip */ }
+      else if (ch === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+      else cur += ch;
+    }
+  }
+  if (cur.length || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(r => r.length && r.some(c => c.trim() !== ''));
+}
+
+async function exportSkusCSV() {
+  if (skus.length === 0) { showToast('商品がありません'); return; }
+  const sorted = skus.slice().sort((a, b) => (a.sku || '').localeCompare(b.sku || ''));
+  const header = ['SKU','商品名','テーマ','検索タグ','状態','備考','販売単価','但し書き','表示'];
+  const rows = sorted.map(s => [
+    s.sku, s.name, s.theme || '', s.searchTags || '',
+    s.status || '販売中', s.memo || '', s.price,
+    s.note || '', s.active !== false ? '表示' : '非表示'
+  ]);
+  const csv = [header, ...rows].map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `商品マスタ_${todayISO()}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  showToast('CSV を出力しました');
+}
+
+async function importSkusCSV(file) {
+  const text = await file.text();
+  const rows = parseCsvText(text);
+  if (rows.length < 2) { showToast('CSV が空または読めません'); return; }
+  const header = rows[0].map(h => h.trim());
+  const idx = {};
+  header.forEach((h, i) => {
+    if (h === 'SKU') idx.sku = i;
+    else if (h === '商品名') idx.name = i;
+    else if (h === 'テーマ') idx.theme = i;
+    else if (h === '検索タグ') idx.searchTags = i;
+    else if (h === '状態') idx.status = i;
+    else if (h === '備考') idx.memo = i;
+    else if (h === '販売単価' || h === '直近販売単価' || h === '単価') idx.price = i;
+    else if (h === '但し書き') idx.note = i;
+    else if (h === '表示' || h === 'active') idx.active = i;
+  });
+  if (idx.sku === undefined || idx.name === undefined) {
+    showToast('CSV に「SKU」「商品名」の列が必要です'); return;
+  }
+  let added = 0, updated = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const sku = (row[idx.sku] || '').trim();
+    const name = (row[idx.name] || '').trim();
+    if (!sku || !name) continue;
+    const existing = skus.find(s => s.sku === sku);
+    const obj = existing
+      ? { ...existing }
+      : { sku, name, price: 0, note: '', theme: '', searchTags: '', status: '販売中', memo: '', active: true };
+    obj.name = name;
+    if (idx.theme !== undefined) obj.theme = (row[idx.theme] || '').trim();
+    if (idx.searchTags !== undefined) obj.searchTags = (row[idx.searchTags] || '').trim();
+    if (idx.status !== undefined) {
+      const s = (row[idx.status] || '').trim();
+      if (s) obj.status = s;
+    }
+    if (idx.memo !== undefined) obj.memo = (row[idx.memo] || '').trim();
+    if (idx.price !== undefined) {
+      const p = Number(String(row[idx.price]).replace(/[^\d.-]/g, ''));
+      if (!isNaN(p)) obj.price = p;
+    }
+    if (idx.note !== undefined) obj.note = (row[idx.note] || '').trim();
+    // 状態 → active 連動
+    if (obj.status === '完売' || obj.status === '廃番') {
+      obj.active = false;
+    } else if (idx.active !== undefined) {
+      const v = (row[idx.active] || '').trim();
+      obj.active = (v === '表示' || v.toLowerCase() === 'true' || v === '1');
+    } else if (!existing) {
+      obj.active = true;
+    }
+    await dbPut(STORE_SKUS, obj);
+    if (existing) updated++; else added++;
+  }
+  skus = await dbAll(STORE_SKUS);
+  renderSkuList();
+  fillSkuSelect();
+  showToast(`CSV取込: 新規 ${added} 件 / 更新 ${updated} 件`);
 }
 
 async function toggleSkuActive(code) {
