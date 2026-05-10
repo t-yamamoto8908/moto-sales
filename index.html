@@ -361,6 +361,18 @@ button.chip:hover { background: var(--border); }
   line-height: 1.4;
   position: relative;
 }
+.dirty-banner {
+  background: #fff3cd;
+  color: #664d03;
+  border-bottom: 1px solid #ffe69c;
+  padding: 10px 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: center;
+  font-weight: 600;
+}
+.dirty-banner:hover { background: #ffe69c; }
 .drive-banner .close {
   position: absolute;
   top: 4px; right: 6px;
@@ -607,6 +619,10 @@ button.chip:hover { background: var(--border); }
 <div id="drive-banner" class="drive-banner" style="display:none">
   <span>⚠ Google Drive に未接続です。発行データはローカルに保存され、後から履歴ページで再送信できます。</span>
   <button type="button" class="close" id="drive-banner-close" aria-label="閉じる">×</button>
+</div>
+
+<div id="dirty-banner" class="dirty-banner" style="display:none">
+  ⚠ 設定に未保存の変更があります（タップして設定タブへ）
 </div>
 
 <main>
@@ -1399,11 +1415,17 @@ async function init() {
   applyHeaderShop();
   document.getElementById('i-date').value = todayISO();
 
-  // 起動時に Drive にサイレント再サインインを試みる
+  // 起動時: まず localStorage からトークン復元、ダメならサイレントサインイン
   if (isDriveConfigured()) {
-    setTimeout(() => {
-      driveSignIn(true).catch(() => { /* 失敗時はバナーで通知済み */ });
-    }, 500);
+    const restored = restoreDriveTokenFromStorage();
+    if (restored) {
+      applyDriveStatus(); // 緑バッジに更新
+    } else {
+      // 期限切れまたはキャッシュ無し → サイレント試行(失敗してもバナーで通知済み)
+      setTimeout(() => {
+        driveSignIn(true).catch(() => { /* 失敗時はユーザーが手動接続 */ });
+      }, 500);
+    }
   }
 }
 
@@ -1492,6 +1514,32 @@ function ensureGoogleScript() {
   });
 }
 
+function saveDriveTokenToStorage() {
+  try {
+    if (driveAccessToken && driveTokenExpiry > Date.now()) {
+      localStorage.setItem('moto-drive-token', JSON.stringify({
+        token: driveAccessToken,
+        expiry: driveTokenExpiry
+      }));
+    }
+  } catch {}
+}
+function restoreDriveTokenFromStorage() {
+  try {
+    const cached = JSON.parse(localStorage.getItem('moto-drive-token') || 'null');
+    // 有効期限まで1分以上残ってる場合のみ復元
+    if (cached && cached.token && cached.expiry > Date.now() + 60000) {
+      driveAccessToken = cached.token;
+      driveTokenExpiry = cached.expiry;
+      return true;
+    }
+  } catch {}
+  return false;
+}
+function clearDriveTokenStorage() {
+  try { localStorage.removeItem('moto-drive-token'); } catch {}
+}
+
 async function driveSignIn(silent) {
   if (!isDriveConfigured()) {
     showToast('クライアントIDを入力してください');
@@ -1509,6 +1557,7 @@ async function driveSignIn(silent) {
           }
           driveAccessToken = resp.access_token;
           driveTokenExpiry = Date.now() + (Number(resp.expires_in || 3600) - 60) * 1000;
+          saveDriveTokenToStorage();
           applyDriveStatus();
           resolve(true);
         },
@@ -1525,6 +1574,7 @@ function driveSignOut() {
   }
   driveAccessToken = null;
   driveTokenExpiry = 0;
+  clearDriveTokenStorage();
   applyDriveStatus();
 }
 
@@ -3328,6 +3378,8 @@ function clearSettingsDirty() {
 function updateDirtyUI() {
   const warn = document.getElementById('settings-dirty-warn');
   if (warn) warn.style.display = settingsDirty ? 'block' : 'none';
+  const banner = document.getElementById('dirty-banner');
+  if (banner) banner.style.display = settingsDirty ? 'block' : 'none';
 }
 
 function setupSettings() {
@@ -3690,6 +3742,17 @@ function setupModals() {
     dbc.addEventListener('click', () => {
       try { sessionStorage.setItem('drive-banner-dismissed-' + todayISO(), '1'); } catch {}
       document.getElementById('drive-banner').style.display = 'none';
+    });
+  }
+  const dirtyBanner = document.getElementById('dirty-banner');
+  if (dirtyBanner) {
+    dirtyBanner.addEventListener('click', () => {
+      // 設定タブに遷移
+      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('section.page').forEach(p => p.classList.remove('active'));
+      document.querySelector('nav button[data-page="settings"]').classList.add('active');
+      document.getElementById('page-settings').classList.add('active');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     });
   }
   const delExec = document.getElementById('btn-delete-execute');
