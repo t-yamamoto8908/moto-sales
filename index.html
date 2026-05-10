@@ -709,6 +709,7 @@ button.chip:hover { background: var(--border); }
       <button class="btn secondary full" id="btn-issue-paper" type="button" style="margin-bottom:6px;background:#34c759;color:#fff">📝 紙で記録（白紙手書き分を記録）</button>
       <button class="btn secondary full" id="btn-issue-none" type="button" style="background:#8e8e93;color:#fff">📊 売上のみ記録（領収書なし）</button>
     </div>
+    <button class="btn secondary full" id="btn-clear-form" type="button" style="margin-top:10px;background:transparent;color:var(--text-sub);border:1px solid var(--border)">🗑 入力をすべてクリア</button>
   </div>
 
   <div class="card" id="issue-result" style="display:none">
@@ -824,6 +825,10 @@ button.chip:hover { background: var(--border); }
 
 <!-- ===== 設定ページ ===== -->
 <section id="page-settings" class="page">
+  <div id="settings-dirty-warn" style="display:none;background:#fff3cd;color:#664d03;border:1px solid #ffe69c;padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;line-height:1.5">
+    ⚠ <strong>保存されていない変更があります</strong><br>
+    画面下の「設定を保存」ボタンを押すまで、変更は反映されません。
+  </div>
   <div class="card">
     <h2>事業者情報</h2>
     <div class="field">
@@ -1043,6 +1048,18 @@ button.chip:hover { background: var(--border); }
     <div class="modal-actions">
       <button class="btn secondary" data-close-modal="modal-chip">キャンセル</button>
       <button class="btn" id="btn-chip-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 発行確認モーダル -->
+<div class="modal" id="modal-issue-confirm">
+  <div class="modal-content" style="max-width:480px">
+    <h3 id="issue-confirm-title" style="margin-top:0">発行内容を確認</h3>
+    <div id="issue-confirm-body" style="font-size:14px;line-height:1.7;margin-bottom:14px;padding:12px;background:var(--surface-2);border-radius:8px"></div>
+    <div class="modal-actions">
+      <button class="btn secondary" data-close-modal="modal-issue-confirm">キャンセル</button>
+      <button class="btn" id="btn-issue-execute">発行する</button>
     </div>
   </div>
 </div>
@@ -1381,6 +1398,13 @@ async function init() {
   applyDriveBanner();
   applyHeaderShop();
   document.getElementById('i-date').value = todayISO();
+
+  // 起動時に Drive にサイレント再サインインを試みる
+  if (isDriveConfigured()) {
+    setTimeout(() => {
+      driveSignIn(true).catch(() => { /* 失敗時はバナーで通知済み */ });
+    }, 500);
+  }
 }
 
 async function requestPersistentStorage() {
@@ -1490,7 +1514,7 @@ async function driveSignIn(silent) {
         },
         error_callback: (err) => reject(new Error(err.message || 'OAuth error'))
       });
-      driveTokenClient.requestAccessToken({ prompt: silent ? '' : 'consent' });
+      driveTokenClient.requestAccessToken({ prompt: silent ? 'none' : '' });
     } catch (e) { reject(e); }
   });
 }
@@ -1767,12 +1791,63 @@ function setupIssue() {
     });
   });
 
-  document.getElementById('btn-issue-electronic').addEventListener('click', () => issueReceipt('electronic'));
-  document.getElementById('btn-issue-paper').addEventListener('click', () => issueReceipt('paper'));
-  document.getElementById('btn-issue-none').addEventListener('click', () => issueReceipt('none'));
+  document.getElementById('btn-issue-electronic').addEventListener('click', () => openIssueConfirm('electronic'));
+  document.getElementById('btn-issue-paper').addEventListener('click', () => openIssueConfirm('paper'));
+  document.getElementById('btn-issue-none').addEventListener('click', () => openIssueConfirm('none'));
+  document.getElementById('btn-clear-form').addEventListener('click', resetIssueForm);
   document.getElementById('btn-download').addEventListener('click', downloadPDF);
   document.getElementById('btn-share').addEventListener('click', sharePDF);
   document.getElementById('btn-new').addEventListener('click', resetIssueForm);
+}
+
+let pendingIssueType = null;
+function openIssueConfirm(type) {
+  // 入力欄に未追加のものがあれば自動で追加
+  const itemName = document.getElementById('i-itemname').value.trim();
+  const price = Number(document.getElementById('i-price').value) || 0;
+  if (cart.length === 0 && (itemName || price > 0)) {
+    addCartItem();
+  }
+  if (cart.length === 0) {
+    showToast('内訳を1つ以上追加してください'); return;
+  }
+
+  const noRecip = document.getElementById('i-no-recipient').checked;
+  const recipient = document.getElementById('i-recipient').value.trim();
+  const date = document.getElementById('i-date').value || todayISO();
+  const pay = document.querySelector('input[name="pay"]:checked').value;
+  const note = (document.getElementById('i-note').value || '').trim();
+  const memo = (document.getElementById('i-memo').value || '').trim();
+  const total = cart.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
+
+  // モーダルにサマリーを表示
+  const recipDisp = (noRecip || !recipient) ? '<span style="color:var(--text-sub)">（宛名なし）</span>' : `${escapeHtml(recipient)} 様`;
+  const itemsHtml = cart.map(it => {
+    const sub = it.unitPrice * it.quantity;
+    const isDiscount = it.isDiscount || sub < 0;
+    const color = isDiscount ? 'color:#c00' : '';
+    return `<div style="${color}">・${escapeHtml(it.name)} ¥${it.unitPrice.toLocaleString()} × ${it.quantity} = ${sub < 0 ? '-' : ''}¥${Math.abs(sub).toLocaleString()}</div>`;
+  }).join('');
+  const taxLine = settings.taxEnabled !== false ? (() => {
+    const t = calcTax(total, settings.taxRate || 10);
+    return `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">  (内消費税 ${t.rate}%: ¥${t.tax.toLocaleString()})</div>`;
+  })() : '';
+
+  const tBadge = `<span style="display:inline-block;padding:2px 10px;border-radius:10px;background:${typeBadgeColor(type)};color:#fff;font-size:12px;font-weight:600">${typeBadgeText(type)}</span>`;
+  document.getElementById('issue-confirm-title').innerHTML = `発行内容を確認 ${tBadge}`;
+  document.getElementById('issue-confirm-body').innerHTML = `
+    <div><strong>日付:</strong> ${formatDateJa(date)}</div>
+    <div><strong>宛名:</strong> ${recipDisp}</div>
+    <div style="margin-top:6px"><strong>内訳:</strong></div>
+    <div style="margin-left:6px">${itemsHtml}</div>
+    <div style="margin-top:6px;font-size:16px"><strong>合計: ${formatYen(total)}</strong></div>
+    ${taxLine}
+    <div style="margin-top:6px"><strong>決済:</strong> ${escapeHtml(pay)}</div>
+    <div><strong>但し:</strong> ${note ? escapeHtml(note) : '<span style="color:var(--text-sub)">(自動)</span>'}</div>
+    <div><strong>内部メモ:</strong> ${memo ? escapeHtml(memo) : '<span style="color:var(--text-sub)">(なし)</span>'}</div>
+  `;
+  pendingIssueType = type;
+  openModal('modal-issue-confirm');
 }
 
 function openDiscountModal() {
@@ -2033,6 +2108,7 @@ async function issueReceipt(type) {
   const pay = document.querySelector('input[name="pay"]:checked').value;
   const note = document.getElementById('i-note').value.trim();
 
+  // 宛名は任意(空欄でも recipientNone=true として扱う)
   const total = cart.reduce((s, it) => s + it.unitPrice * it.quantity, 0);
   const hideBreakdown = document.getElementById('i-hide-breakdown').checked;
   const internalMemo = (document.getElementById('i-memo').value || '').trim();
@@ -2111,6 +2187,7 @@ async function syncReceiptToDrive(receipt) {
     receipt.driveSyncedAt = new Date().toISOString();
     await dbPut(STORE_RECEIPTS, receipt);
     if (anyUploaded) showToast('Driveに保存しました');
+    await renderHistory();
     return true;
   } catch (e) {
     console.error('Drive sync failed:', e);
@@ -2532,19 +2609,7 @@ async function downloadPDF() {
   const blob = await generatePDFBlob(lastIssuedReceipt);
   const filename = buildPdfFilename(lastIssuedReceipt);
 
-  // Drive自動アップロードが有効ならDriveに保存(ローカルDLは省略)
-  if (settings.driveAutoUpload && isDriveConfigured()) {
-    try {
-      await uploadToDrive(blob, filename, 'application/pdf');
-      showToast('Driveに保存しました');
-      return;
-    } catch (e) {
-      showToast('Drive失敗→ローカル保存します');
-      console.error(e);
-    }
-  }
-
-  // ローカルダウンロード
+  // ローカルダウンロードのみ(Driveは発行時に自動アップ済み)
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -2561,14 +2626,7 @@ async function sharePDF() {
   const blob = await generatePDFBlob(lastIssuedReceipt);
   const filename = buildPdfFilename(lastIssuedReceipt);
 
-  // Drive自動アップロード(共有と並行)
-  let drivePromise = null;
-  if (settings.driveAutoUpload && isDriveConfigured()) {
-    drivePromise = uploadToDrive(blob, filename, 'application/pdf')
-      .then(() => showToast('Driveに保存しました'))
-      .catch(e => { console.error(e); showToast('Driveアップロード失敗'); });
-  }
-
+  // 共有のみ(Driveは発行時に自動アップ済み)
   const file = new File([blob], filename, { type: 'application/pdf' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
@@ -2588,7 +2646,6 @@ async function sharePDF() {
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
-  if (drivePromise) await drivePromise;
 }
 
 // ============================================================
@@ -3255,13 +3312,38 @@ function renderBlankNoteChips() {
 // ============================================================
 // 設定ページ
 // ============================================================
+let settingsDirty = false;
+function markSettingsDirty() {
+  if (!settingsDirty) {
+    settingsDirty = true;
+    updateDirtyUI();
+  }
+}
+function clearSettingsDirty() {
+  if (settingsDirty) {
+    settingsDirty = false;
+    updateDirtyUI();
+  }
+}
+function updateDirtyUI() {
+  const warn = document.getElementById('settings-dirty-warn');
+  if (warn) warn.style.display = settingsDirty ? 'block' : 'none';
+}
+
 function setupSettings() {
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
+  // dirty追跡: 設定ページの全input/selectで変更を検知
+  document.querySelectorAll('#page-settings input, #page-settings select').forEach(el => {
+    if (el.type === 'file') return;
+    el.addEventListener('input', markSettingsDirty);
+    el.addEventListener('change', markSettingsDirty);
+  });
   document.getElementById('btn-stamp-upload').addEventListener('click', () => document.getElementById('stamp-file').click());
   document.getElementById('stamp-file').addEventListener('change', handleStampUpload);
   document.getElementById('btn-stamp-clear').addEventListener('click', () => {
     settings.stampImage = null;
     renderStampPreview();
+    markSettingsDirty();
     showToast('印影を削除しました（保存ボタンで確定）');
   });
   document.getElementById('btn-product-add').addEventListener('click', () => openSkuModal(null));
@@ -3356,6 +3438,7 @@ async function handleStampUpload(e) {
   reader.onload = () => {
     settings.stampImage = reader.result;
     renderStampPreview();
+    markSettingsDirty();
     showToast('印影を読み込みました（保存ボタンで確定）');
   };
   reader.readAsDataURL(file);
@@ -3390,6 +3473,7 @@ async function saveSettings() {
   applyHeaderShop();
   renderNoteChips();
   renderBlankNoteChips();
+  clearSettingsDirty();
   showToast('設定を保存しました');
 }
 
@@ -3619,6 +3703,16 @@ function setupModals() {
     });
     skuDelExec.addEventListener('click', executeSkuDelete);
   }
+
+  const issueExec = document.getElementById('btn-issue-execute');
+  if (issueExec) issueExec.addEventListener('click', () => {
+    closeModal('modal-issue-confirm');
+    if (pendingIssueType) {
+      const t = pendingIssueType;
+      pendingIssueType = null;
+      issueReceipt(t);
+    }
+  });
 }
 
 // ============================================================
